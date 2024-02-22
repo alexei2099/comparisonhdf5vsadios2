@@ -1,69 +1,122 @@
-import time
-import h5py
-import numpy as np
-import adios2
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <adios2_c.h>
+#include "hdf5.h"
 
-def generate_dataset():
-    dataset = np.random.rand(1000, 1000)  # Example dataset of shape (1000, 1000)
-    return dataset
+#define NX 1000
+#define NY 1000
+#define FILENAME "data_comparison"
 
-def write_hdf5(dataset):
-    with h5py.File('test_hdf5.h5', 'w') as f:
-        f.create_dataset('my_dataset', data=dataset)
+void generate_data(int data[NX][NY]) {
+    srand(time(NULL));
+    for (int i = 0; i < NX; ++i) {
+        for (int j = 0; j < NY; ++j) {
+            data[i][j] = rand() % 100; // Generate random data
+        }
+    }
+}
 
-def write_adios(dataset):
-    adios = adios2.ADIOS()
-    io = adios.DeclareIO("myio")
-    writer = io.Open("test_adios2.bp", adios2.Mode.Write)
-    writer.Put("my_dataset", dataset)
-    writer.Close()
+void write_hdf5(int data[NX][NY]) {
+    hid_t file_id, dataset_id, dataspace_id;
+    hsize_t dims[2] = {NX, NY};
 
-def read_hdf5():
-    with h5py.File('test_hdf5.h5', 'r') as f:
-        dataset = f['my_dataset'][:]
-    return dataset
+    // Create a new file using default properties.
+    file_id = H5Fcreate(FILENAME "_hdf5.h5", H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
 
-def read_adios():
-    adios = adios2.ADIOS()
-    io = adios.DeclareIO("myio")
-    reader = io.Open("test_adios2.bp", adios2.Mode.Read)
-    variable = io.InquireVariable("my_dataset")
-    shape = variable.Shape()
-    dataset = np.zeros(shape, dtype=np.float64)
-    reader.Get("my_dataset", dataset, adios2.Mode.Sync)
-    reader.Close()
-    return dataset
+    // Create the data space for the dataset.
+    dataspace_id = H5Screate_simple(2, dims, NULL);
 
-if __name__ == "__main__":
-    dataset = generate_dataset()
+    // Create a dataset in the file.
+    dataset_id = H5Dcreate2(file_id, "dataset", H5T_STD_I32LE, dataspace_id,
+                            H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
 
-    # Print the size of the generated dataset
-    print("Size of the generated dataset:", dataset.nbytes / (1024 * 1024), "MB")
+    // Write the data to the dataset.
+    H5Dwrite(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
 
-    # Writing
-    start_time = time.time()
-    write_hdf5(dataset)
-    hdf5_write_time = time.time() - start_time
+    // Close resources
+    H5Dclose(dataset_id);
+    H5Sclose(dataspace_id);
+    H5Fclose(file_id);
+}
 
-    start_time = time.time()
-    write_adios(dataset)
-    adios_write_time = time.time() - start_time
+void write_adios2(int data[NX][NY]) {
+    adios2_adios* ad = adios2_init(MPI_COMM_WORLD, adios2_debug_mode_on);
 
-    # Reading
-    start_time = time.time()
-    hdf5_dataset = read_hdf5()
-    hdf5_read_time = time.time() - start_time
+    adios2_io* io = adios2_declare_io(ad, "IO");
+    adios2_define_variable(io, "data", adios2_type_int32_t, 2, NULL, NULL, NULL, adios2_constant_dims_true);
 
-    start_time = time.time()
-    adios_dataset = read_adios()
-    adios_read_time = time.time() - start_time
+    adios2_engine* engine = adios2_open(io, FILENAME "_adios2.bp", adios2_mode_write);
 
-    # Output
-    print("HDF5 Write Time:", hdf5_write_time)
-    print("ADIOS Write Time:", adios_write_time)
-    print("HDF5 Read Time:", hdf5_read_time)
-    print("ADIOS Read Time:", adios_read_time)
+    adios2_begin_step(engine, adios2_step_mode_append, -1, 1);
+    adios2_put(engine, "data", data, adios2_mode_deferred);
+    adios2_end_step(engine);
 
-    # Verify data consistency (optional)
-    assert np.array_equal(dataset, hdf5_dataset)
-    assert np.array_equal(dataset, adios_dataset)
+    adios2_close(engine);
+    adios2_finalize(ad);
+}
+
+void read_hdf5() {
+    hid_t file_id, dataset_id, dataspace_id;
+    int data_out[NX][NY];
+
+    // Open the file and the dataset.
+    file_id = H5Fopen(FILENAME "_hdf5.h5", H5F_ACC_RDONLY, H5P_DEFAULT);
+    dataset_id = H5Dopen2(file_id, "dataset", H5P_DEFAULT);
+
+    // Read the data.
+    H5Dread(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, data_out);
+
+    // Close resources.
+    H5Dclose(dataset_id);
+    H5Fclose(file_id);
+}
+
+void read_adios2() {
+    adios2_adios* ad = adios2_init(MPI_COMM_WORLD, adios2_debug_mode_on);
+
+    adios2_io* io = adios2_declare_io(ad, "IO");
+    adios2_engine* engine = adios2_open(io, FILENAME "_adios2.bp", adios2_mode_read);
+
+    adios2_begin_step(engine, adios2_step_mode_read, 0, -1);
+    const adios2_variable* var = adios2_inquire_variable(io, "data");
+    int data_out[NX][NY];
+    adios2_get(engine, var, data_out, adios2_mode_deferred);
+    adios2_end_step(engine);
+
+    adios2_close(engine);
+    adios2_finalize(ad);
+}
+
+int main() {
+    int data[NX][NY];
+    generate_data(data);
+
+    printf("Dataset size: %d x %d\n", NX, NY);
+
+    printf("Writing HDF5...\n");
+    clock_t start = clock();
+    write_hdf5(data);
+    clock_t end = clock();
+    printf("HDF5 write time: %f seconds\n", ((double)(end - start)) / CLOCKS_PER_SEC);
+
+    printf("Writing ADIOS 2...\n");
+    start = clock();
+    write_adios2(data);
+    end = clock();
+    printf("ADIOS 2 write time: %f seconds\n", ((double)(end - start)) / CLOCKS_PER_SEC);
+
+    printf("Reading HDF5...\n");
+    start = clock();
+    read_hdf5();
+    end = clock();
+    printf("HDF5 read time: %f seconds\n", ((double)(end - start)) / CLOCKS_PER_SEC);
+
+    printf("Reading ADIOS 2...\n");
+    start = clock();
+    read_adios2();
+    end = clock();
+    printf("ADIOS 2 read time: %f seconds\n", ((double)(end - start)) / CLOCKS_PER_SEC);
+
+    return 0;
+}

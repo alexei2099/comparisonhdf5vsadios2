@@ -1,12 +1,12 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <time.h>
-#include <adios2_c.h>
-#include "hdf5.h"
+include <stdio.h>
+include <stdlib.h>
+include <time.h>
+include <adios2_c.h>
+include "hdf5.h"
 
-#define NX 1000
-#define NY 1000
-#define FILENAME "data_comparison"
+define NX 1000
+define NY 1000
+define FILENAME "data_comparison"
 
 void generate_data(int data[NX][NY]) {
     srand(time(NULL));
